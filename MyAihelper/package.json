@@ -1,0 +1,18 @@
+{
+  "name": "myaihelper",
+  "version": "1.0.0",
+  "description": "Starter AI assistant agent scaffold for MyAihelper",
+  "type": "module",
+  "main": "src/agent.js",
+  "scripts": {
+    "start": "node src/agent.js",
+    "check": "node --check src/agent.js"
+  },
+  "keywords": [
+    "agent",
+    "ai",
+    "assistant",
+    "cli"
+  ],
+  "license": "MIT"
+}

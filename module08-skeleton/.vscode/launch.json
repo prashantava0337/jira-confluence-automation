@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Launch Chrome (Vite)",
+      "type": "pwa-chrome",
+      "request": "launch",
+      "url": "http://localhost:5173",
+      "webRoot": "${workspaceFolder}/client",
+      "runtimeExecutable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "runtimeArgs": [
+        "--remote-debugging-port=9222",
+        "--user-data-dir=${workspaceFolder}/.vscode/chrome-profile",
+        "--disable-background-networking",
+        "--disable-component-extensions-with-background-pages"
+      ],
+      "sourceMaps": true,
+      "breakOnLoad": true,
+      "preLaunchTask": "Start Dev Server (client)"
+    },
+    {
+      "name": "Attach to Chrome (remote)",
+      "type": "pwa-chrome",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}/client",
+      "sourceMaps": true
+    }
+  ]
+}

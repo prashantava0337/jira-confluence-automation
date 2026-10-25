@@ -1,0 +1,15 @@
+{
+  "name": "module08-monorepo",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "version": "0.0.0",
+  "description": "Monorepo for Module 08 (React client + Node server)",
+  "scripts": {
+    "install": "npm install",
+    "bootstrap": "npm install",
+    "ls": "npm --workspaces ls --depth 0"
+  }
+}
