@@ -1,128 +1,99 @@
-# SpecKit Constitution — Jira / Confluence Automation Project
+# Jira / Confluence Automation Constitution
 
-Version: 1.0
-Date: 2026-09-14
-Owner: Project Team / Automation Squad
+## Core Principles
 
-## 1. Purpose
-This Constitution defines the scope, architecture, standards, and governance for the Jira/Confluence Automation project (the Project), whose goal is to build a maintainable automation platform that integrates with Atlassian Jira and Confluence to automate common workflows, templates, and documentation tasks.
+### I. Spec-Driven Development (NON-NEGOTIABLE)
+Every feature starts as a specification, then a plan, then tasks, then code.
+- The specification (`/spec/specification.md`) and this constitution are the source of truth; code follows them, not the reverse.
+- Changes to behavior, API contracts, or the data model update the spec in the same pull request.
+- Architectural decisions and amendments to this constitution are recorded as RFCs in `/spec/rfcs`.
 
-The Project uses a modern web stack:
-- Frontend: React 18 + Vite
-- Backend: Node.js (LTS) + Express
-- Database: PostgreSQL 15 (containerized via Docker)
+### II. Layered Architecture
+The backend is strictly layered: **routes → controllers → services → models**.
+- Routes only map HTTP paths to controllers. Controllers are thin: parse input, call a service, shape the response.
+- All business logic and all Jira/Confluence integration logic live in services.
+- Models are ORM entities or lightweight query modules; no business rules.
+- The React client talks to the backend only through the REST API, using a single API client module.
 
-This document is written as a SpecKit-style constitution to guide implementing teams, reviewers, and future maintainers.
+### III. Security and Secrets First (NON-NEGOTIABLE)
+- API tokens, OAuth client secrets, JWT secrets, and encryption keys are never committed. Only `.env.example` with placeholders is tracked; `.env` is git-ignored.
+- Integration credentials are stored encrypted at rest, or as references to an external secrets manager. They are never returned by the API or written to logs.
+- Request only the minimum Jira/Confluence scopes each integration needs (least privilege).
+- All external callbacks and redirect URIs use HTTPS. All inputs are validated and sanitized before use or before being forwarded to external APIs.
+- Authorization is role-based (admin, maintainer, user) and enforced in middleware; only owners or admins may modify an automation.
 
-## 2. Scope
-In scope:
-- Build a secure REST API that performs actions against Jira and Confluence using OAuth2 or API tokens.
-- Provide a web UI for configuration, monitoring, and manual triggers of automations.
-- Persist configuration, audit logs, and small reference data in PostgreSQL 15.
-- Containerize the backend and database for local dev and CI using Docker and docker-compose (or similar).
-- Provide CI/CD pipelines for tests, linting, build, and deployment.
+### IV. Test-First Quality
+- Services and core business logic require unit tests, with a minimum of **80% coverage**. External API clients are mocked.
+- API endpoints require integration tests (supertest) against a real PostgreSQL 15 instance running in Docker.
+- Jira/Confluence interactions are tested against mock servers or recorded fixtures, never live tenants in CI.
+- At least one end-to-end test covers the critical path: run an automation, record a job, write audit logs.
+- Tests are written before or together with the code they cover; a pull request that adds behavior without tests is not mergeable.
 
-Out of scope (initial):
-- Implementing full enterprise SSO integration (deferred to Phase 2).
-- Large-scale event-driven automation at massive scale (deferred; initial target is moderate throughput).
+### V. API Contract Discipline
+- The REST API is versioned (`/api/v1/...`), JSON-only, with RFC 3339 timestamps.
+- Errors use one format everywhere: `{ code, message, details? }`, with correct HTTP status codes (400, 401, 403, 404, 429, 500).
+- An OpenAPI v3 document (`/spec/openapi.yaml`) describes every endpoint and is updated in the same pull request as any route change.
+- Breaking changes require a new API version and an RFC.
 
-## 3. Non-functional Requirements
-- Security: secrets must be stored encrypted (Vault or environment-managed secrets in CI). Minimally, do not commit API tokens.
-- Observability: logs, metrics, and basic tracing for the backend (structured JSON logs and Prometheus metrics where feasible).
-- Reliability: automated retries for external API calls with exponential backoff and idempotency where necessary.
-- Performance: the system should handle typical org automation load (hundreds of ops/day) without special scaling in Phase 1.
-- Maintainability: clear modular separation (routes → controllers → services → models) and tests for services and key integrations.
+### VI. Reliability and Observability
+- Calls to Jira/Confluence use exponential backoff with jitter (default max 3 retries) and honor `Retry-After`.
+- Actions that create external resources support idempotency keys (`Idempotency-Key` header) so duplicate requests do not create duplicates.
+- Per-integration rate limiting protects Atlassian quotas.
+- Logs are structured JSON with timestamp, level, correlation ID, and user ID when known.
+- The server exposes `/health`, `/ready` (including database connectivity), and `/metrics` (Prometheus format).
+- Every automation action produces an immutable audit log entry (who, what, when, status).
 
-## 4. High-level Architecture
-- Client (React 18 + Vite): Single Page App for configuration, audit views, and manual/preview flows. Communicates with backend via secure REST API.
-- API (Node.js + Express): Implements API endpoints for UI and automation workers; encapsulates Jira/Confluence integration logic in service modules.
-- PostgreSQL 15: stores accounts, configuration, audit logs, job metadata, and lightweight state.
-- Docker: local dev and CI will run PostgreSQL in a Docker container. Production deployment may use managed Postgres.
+### VII. Simplicity and Maintainability
+- Prefer the simplest design that meets the spec; add abstraction only when a second use case exists.
+- Phase 1 runs jobs synchronously through the API; queues, workers, and Redis are deferred until needed.
+- Database schema changes are made only through version-controlled migrations, never by hand.
 
-Suggested repo layout (monorepo):
-- /client — React + Vite app
-- /server — Node/Express API
-- /spec — design and SpecKit docs
-- /infra — docker-compose and local dev tooling
+## Technology Stack and Constraints
 
-## 5. Data Model (High level)
-- users: local application users (if needed), references to Jira accounts
-- integrations: per-tenant integration records (credentials, scopes, metadata)
-- automation_configs: definitions of triggers, conditions, and actions
-- jobs: execution history, status, result payloads
-- audit_logs: immutable records of automation actions and source
+| Layer | Technology |
+|---|---|
+| Frontend | React 18 + Vite, single-page app |
+| Backend | Node.js (LTS) + Express; the Node version matches `.nvmrc` |
+| Database | PostgreSQL 15, run in Docker for local development and CI |
+| Containers | Docker and docker-compose (`/infra/docker-compose.yml`) |
+| Authentication | JWT-based sessions with RS256, or HS256 with a strong, rotated secret |
 
-Design note: store only the minimal set of metadata required to reconstruct and re-run operations. Avoid persisting complete external payloads unless required for audit.
+Repository layout (monorepo, npm workspaces):
+- `/client` — React + Vite app
+- `/server` — Node/Express API, including `/server/migrations`
+- `/spec` — this constitution, the specification, RFCs, OpenAPI, and recovery docs
+- `/infra` — docker-compose and local development tooling
 
-## 6. Security and Secrets
-- API tokens and OAuth client secrets MUST NOT be committed to source control.
-- For local dev, use .env files listed in .env.example; never commit .env.
-- In CI/CD and production, prefer a secrets manager (HashiCorp Vault, AWS Secrets Manager, or equivalent) or the host platform's secrets feature.
-- Use HTTPS for all external callbacks and redirect URIs.
-- Follow least-privilege: request only required scopes from Jira/Confluence for each integration.
+Data and persistence:
+- Primary keys are UUIDs; table names are `snake_case`.
+- Core tables: `users`, `integrations`, `automation_configs`, `jobs`, `audit_logs`.
+- Persist only the minimum metadata needed to reconstruct and re-run an operation. Do not store full external payloads unless audit requires it.
 
-## 7. API Contract Guidelines
-- RESTful, versioned endpoints (/api/v1/...), JSON request/response.
-- Use consistent error format: { code, message, details? }
-- Provide openapi/swagger spec in /spec for key endpoints. Keep the spec up to date as part of PR review.
+Scope:
+- In scope: a secure REST API acting on Jira and Confluence (OAuth2 or API tokens), a web UI for configuration, monitoring, and manual triggers, persisted configuration and audit logs, containerized dev and CI, and CI/CD pipelines.
+- Out of scope for Phase 1: enterprise SSO (Phase 2) and large-scale event-driven automation.
 
-## 8. Local Development and Docker
-- docker-compose.yml (in /infra) will define:
-  - postgres: image postgres:15
-  - server: optional local build referencing server source
-  - (optional) a lightweight reverse proxy for routing
-- Provide a script to bootstrap local DB schema (migrations) and seed minimal test data.
-- Keep docker images small (alpine-based production builds where appropriate) but prefer correctness and stability.
+Non-functional targets (Phase 1):
+- Handle typical organizational load (hundreds of operations per day) without special scaling.
+- Availability 99.5%; recovery time objective 1 hour; daily backups retained 30 days, including audit and job records.
 
-## 9. Testing Strategy
-- Unit tests for services and utility functions (Node: jest or vitest for frontend).
-- Integration tests for API endpoints using a test database (Postgres in Docker) and test doubles for Jira/Confluence where possible (recorded fixtures or mock server).
-- End-to-end tests for high-level workflows as time permits; start with a small critical-path E2E suite.
+## Development Workflow and Quality Gates
 
-## 10. CI/CD
-- CI pipelines must run: lint, unit tests, build (client), and server unit tests.
-- For merging to main, require passing CI and at least one approving review.
-- CD: container images pushed to registry and deployed to staging. Production promotion via PR and release tagging.
+- **Code style:** ESLint and Prettier configured at the repository root, enforced by pre-commit hooks and CI.
+- **Commits:** Conventional Commits.
+- **Branches:** `main` is protected and always deployable. Work happens on `feature/*`, `fix/*`, and `chore/*` branches.
+- **Pull requests:** require passing CI and at least one approving review. Larger changes may also need QA sign-off.
+- **CI must run:** lint, client and server unit tests, integration tests with a PostgreSQL service, client production build (`vite build`), and a dependency security scan.
+- **CD:** images built from `main` are pushed to the registry and auto-deployed to staging. Production promotion is a manual step using a semantic-version release tag and changelog.
+- **Local development:** copy `.env.example` to `.env`; start PostgreSQL with docker-compose; run migrations and seed scripts; the client runs with the Vite dev server.
+- **Docker images:** small (Alpine-based for production) but correctness and stability come first.
 
-## 11. Observability and Logging
-- Backend logs: structured JSON with timestamps, correlation IDs, and log-levels.
-- Expose a /health and /metrics endpoints on the server for readiness and monitoring.
-- Capture audit logs for each automation action (who/what/when/status).
+## Governance
 
-## 12. Backup and Recovery
-- Database backups: scheduled snapshots (if using managed DB) or pg_dump-based backups for self-hosted.
-- Ensure that audit and job records are included in backups and that recovery procedures are documented in /spec/recovery.md.
+- This constitution supersedes other practices and guides. Reviewers verify compliance in every pull request.
+- Any complexity that departs from a principle must be justified in the pull request.
+- Amendments require an RFC in `/spec/rfcs`, approval from the project leads, and a version bump below. Minor coding-standard adjustments may be approved through a regular pull request.
+- Versioning follows semantic versioning: MAJOR for removed or redefined principles, MINOR for added principles or sections, PATCH for clarifications.
+- Top risks tracked against these principles: credential leakage (Principle III), Atlassian API rate limits (Principle VI), and schema drift between environments (Principle VII, migrations checked in CI).
 
-## 13. Coding Standards and Conventions
-- JavaScript/TypeScript style: eslint + prettier configuration in root. Enforce via pre-commit hooks and CI.
-- Project structure: keep controllers thin; business logic belongs in services. Models should be ORMs or lightweight query modules.
-- Commit messages: follow Conventional Commits for clarity and automation.
-
-## 14. Branching and Release Policy
-- Main branch: protected, always deployable.
-- Development branches: feature/*, fix/*, chore/*.
-- PRs require code review, passing CI, and an optional QA sign-off for larger changes.
-- Releases: tag with semantic versioning and attach changelog entries.
-
-## 15. Governance and Change Control
-- This Constitution is the authoritative project design guide. Changes to architecture or major decisions must be recorded as RFCs in /spec/rfcs and approved by the project owners.
-- Minor changes to coding standards may be approved via PRs; major changes require an RFC and an approval by project leads.
-
-## 16. Onboarding and Documentation
-- Keep this constitution and a short QuickStart in /spec/README.md.
-- Document how to obtain Jira/Confluence developer credentials and recommended scopes in /spec/integrations.md.
-- Provide examples for local dev, migration, and seeding in /infra and /spec.
-
-## 17. Risk Register (top items)
-- Credential leakage — mitigate with secrets management and peer review.
-- API rate limits from Atlassian — mitigate via caching, retries, and backoff.
-- Schema drift between environments — mitigate with migrations + CI checks.
-
-## 18. Appendix
-- Tech stack: React 18 (Vite), Node.js (LTS) + Express, PostgreSQL 15 via Docker.
-- Recommended Node version: match .nvmrc (LTS, e.g., 24.x).
-- Spec location: /spec in repository; RFCs live in /spec/rfcs.
-
----
-
-This constitution can be updated by submitting an RFC and approval. For immediate next steps, draft an initial RFC that details: authentication choices (OAuth2 vs API tokens), required Jira/Confluence scopes, and a minimal data model for automations and audit logs.
+**Version**: 1.1.0 | **Ratified**: 2026-09-14 | **Last Amended**: 2026-10-26
