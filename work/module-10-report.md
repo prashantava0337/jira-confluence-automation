@@ -118,3 +118,6 @@ Each entry below is an instruction file with a one-line description. Optional su
 - Constraint: the existing API call targets the Jira Cloud v3 endpoint; verify the endpoint and authentication against the self-hosted instance before relying on it.
 - Constraint: a bad row never silently changes figures; report it as a warning or fail with an error.
 ~~~
+
+
+Create a Python script at tools/ sprint-metrics.py that reads the Jira CSV, including the repeated Sprint columns, and calculates the per-sprint figures. Those are completed (counted once, in the last sprint listed), planned versus added (a story created on the start date counts as planned), completed vs planned, carry-over, story points and the per-team split. Client mode leaves out team names, ticket keys and team-related warnings.  Accept [parameters] as command-line arguments.”

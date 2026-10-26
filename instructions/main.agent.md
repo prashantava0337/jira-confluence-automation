@@ -42,6 +42,21 @@ Each entry below is an instruction file with a one-line description. Optional su
   + Target: `project-jira-automation/**`, `reports/sprint_report_*.html`
   + Exceptions: the `sprint_report` tool is not built yet; see `project-jira-automation/backlog.md`.
 
+- [`./instructions/calculate-compound-interest.agent.md`](./calculate-compound-interest.agent.md) — calculate compound interest (final amount and interest earned) with `tools/compound_interest.py` and present the result.
+  + Keywords: compound interest, interest earned, future value, investment growth, compounding, principal, annual rate
+  + Target: `tools/compound_interest.py`
+  + Exceptions: no simple interest, recurring contributions or variable rates.
+
+- [`./instructions/use-metric-calc.agent.md`](./use-metric-calc.agent.md) — run `tools/sprint-metrics.py` to calculate per-sprint metrics (completed, planned vs added, carry-over, points, per-team split) from a Jira CSV.
+  + Keywords: sprint metrics, planned vs added, completed vs planned, carry-over, story points, per-team split, sprint table
+  + Target: `tools/sprint-metrics.py`, `data/export.csv`
+  + Exceptions: needs a config with the sprint list; no forecast (`tools/delivery-forecast.py`) or HTML output.
+
+- [`./instructions/use-delivery-forecast.agent.md`](./use-delivery-forecast.agent.md) — run `tools/delivery-forecast.py` to forecast velocity, sprints needed, projected finish and an On track / At risk status with a banner reason.
+  + Keywords: forecast, on track, at risk, velocity, projected finish, deadline, sprints needed, remaining scope
+  + Target: `tools/delivery-forecast.py`
+  + Exceptions: needs total scope and deadline from the user or config; completed counts come from `use-metric-calc.agent.md`.
+
 - [`./instructions/create-status-report.agent.md`](./create-status-report.agent.md) — generate a concise weekly status report (accomplishments, blockers, next week).
   + Keywords: status report, weekly status, weekly report, team update, accomplishments, blockers
   + Target: `reports/*.md`
