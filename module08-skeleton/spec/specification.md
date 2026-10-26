@@ -1,400 +1,314 @@
-# SpecKit Specification — Jira / Confluence Automation Project
+# Feature Specification: Jira / Confluence Automation Platform
 
-Version: 1.0
-Date: 2026-09-14
-Authors: Automation Squad
-
-This specification expands the constitution into concrete design decisions, API contracts, data models, development and deployment patterns, and verification guidance. It is written in the SpecKit style (clear sections, requirements, examples, and an actionable implementation checklist).
-
-CONTENTS
-- Overview
-- Goals & Success Criteria
-- Glossary
-- System Architecture (components & interactions)
-- API Specification (paths, methods, payloads)
-- Data Model (DDL-like schema + notes)
-- Authentication & Authorization
-- Local Development & Infra (docker-compose + commands)
-- Environment Variables (.env.example)
-- Database Migrations and Seed
-- Error Handling, Retries, Rate Limiting, Idempotency
-- Observability & Monitoring
-- Testing Strategy (unit, integration, e2e)
-- CI/CD
-- Security Considerations
-- Non-functional Requirements and SLAs
-- Implementation Plan & Milestones
+**Feature Branch**: `001-jira-confluence-automation`
+**Created**: 2026-09-14
+**Updated**: 2026-10-26
+**Status**: Draft
+**Constitution**: [constitution.md](./constitution.md) (v1.1.0)
+**Input**: Build an automation platform that integrates with Atlassian Jira and Confluence. It exposes a secure REST API and a React UI so users can define automations, manage integrations, run jobs, and review audit logs.
 
 ---
 
-## 1. Overview
-This project builds an automation platform that integrates with Atlassian Jira and Confluence. The platform exposes a secure REST API and a React UI, allowing users to define automations, manage integrations, and review audit logs.
-
-Primary technologies:
-- Frontend: React 18 + Vite
-- Backend: Node.js (LTS) + Express
-- DB: PostgreSQL 15
-- Containerization: Docker (docker-compose for local dev)
-
-Deployment target: container-based environments (Kubernetes or simple container hosts) with managed Postgres recommended for production.
-
-## 2. Goals & Success Criteria
-- Implement stable REST API for automations and integrations with clear OpenAPI documentation.
-- Provide a minimal React UI to configure integrations and display audit logs.
-- Persist configuration and audit logs to PostgreSQL with migrations under source control.
-- Local development via docker-compose with Postgres 15.
-- CI pipeline that runs lint, tests, and builds client and server.
-
-Success criteria (Phase 1):
-- API implements CRUD for integrations and automation configs and a /jobs endpoint to track runs.
-- Postgres schema and DB seeded for local dev.
-- Integration with a mock Jira/Confluence allows running an automation job and recording audit logs.
-- CI passing on PR with tests and lint configured.
-
-## 3. Glossary
-- Integration: credentials/configuration for a Jira or Confluence connection.
-- Automation Config: a declarative object describing trigger, conditions, and actions.
-- Job: a run/execution instance of an automation config; contains status and result.
-- Audit Log: immutable record of actions performed by the platform.
-
-## 4. System Architecture
-Components:
-- Client (SPA): communicates with API over HTTPS, authenticates via session/JWT.
-- API Server: Express app; routes -> controllers -> services -> models.
-- Worker (optional): same codebase may run scheduled or queued jobs; for Phase 1 jobs are executed synchronously via API.
-- PostgreSQL: persistent storage for configuration and audit logs.
-- (Optional) Redis: for caching and rate-limiting (Phase 2).
-
-Sequence (example: run automation manually):
-1. UI issues POST /api/v1/jobs with automation_id and parameters.
-2. API validates, records a Job with status=queued, then executes the automation via service modules.
-3. Service calls Jira/Confluence APIs (using stored integration credentials) and records results.
-4. Job status updated to success/failure and audit log entry created.
-
-## 5. API Specification
-All endpoints prefixed with /api/v1
-Responses are JSON. Timestamp format: RFC3339 (ISO 8601). Error format: { code, message, details? }
-
-Authentication: Bearer JWT for API calls from UI or external clients (see auth section).
-
-5.1 Integrations
-- GET /api/v1/integrations
-  - Query: ?provider= jira|confluence
-  - Response: 200 [ { id, name, provider, created_at, updated_at, metadata } ]
-
-- GET /api/v1/integrations/:id
-  - Response: 200 { id, name, provider, metadata }
-
-- POST /api/v1/integrations
-  - Body: { name: string, provider: "jira"|"confluence", config: { baseUrl:string, authType: "token"|"oauth2", credentials: { token? , clientId?, clientSecret? } }, scopes?: [string] }
-  - Response: 201 { id, name, provider, created_at }
-  - Notes: credentials.token or oauth2 client id/secret are accepted but stored encrypted (see security)
-
-- PUT /api/v1/integrations/:id
-  - Body: partial allowed; update metadata or rotate credentials.
-  - Response: 200 updated object
-
-- DELETE /api/v1/integrations/:id
-  - Response: 204
-
-5.2 Automation Configs
-- GET /api/v1/automations
-  - Response: 200 [ { id, name, trigger, actions[], enabled, owner } ]
-
-- GET /api/v1/automations/:id
-  - Response: 200 { automation object }
-
-- POST /api/v1/automations
-  - Body: { name, description?, trigger: { type: 'manual'|'schedule'|'webhook', config: {} }, conditions?: [], actions: [ { type: 'create_issue'|'comment'|'update_page'|..., target_integration_id, params: {} } ], enabled: boolean }
-  - Response: 201 { id }
-
-- PUT /api/v1/automations/:id
-  - Response: 200 updated
-
-- DELETE /api/v1/automations/:id
-  - Response: 204
-
-5.3 Jobs (executions)
-- POST /api/v1/jobs
-  - Body: { automation_id, triggered_by: user_id|null, input?: {} }
-  - Behavior: create Job row with status=running (or queued), execute actions, record results
-  - Response: 201 { job_id }
-
-- GET /api/v1/jobs/:id
-  - Response: 200 { id, automation_id, status, started_at, finished_at, result, audit_log_ids }
-
-- GET /api/v1/jobs?automation_id=&status=
-  - Response: 200 [jobs]
-
-5.4 Audit Logs
-- GET /api/v1/audit?limit=50&since=
-  - Response: 200 [ { id, job_id, action, actor, target, timestamp, details } ]
-
-5.5 Health & Metrics
-- GET /health
-  - Response: 200 { status: 'ok', db: 'ok', queue: 'ok' }
-
-- GET /metrics
-  - Prometheus plaintext metrics (if enabled)
-
-5.6 OpenAPI
-- Provide an OpenAPI v3 spec file at /spec/openapi.yaml and a docs UI accessible in dev (optional).
-
-## 6. Data Model (Postgres)
-Use snake_case table names and UUIDs for primary keys (uuid_generate_v4()). Example minimal schema definitions.
-
-6.1 Extensions
-- Enable: "pgcrypto" or "uuid-ossp" to generate UUIDs.
-
-6.2 Tables
-
-users
-- id UUID PRIMARY KEY
-- username TEXT UNIQUE
-- display_name TEXT
-- email TEXT
-- created_at TIMESTAMP WITH TIME ZONE
-
-integrations
-- id UUID PRIMARY KEY
-- name TEXT
-- provider TEXT -- 'jira' or 'confluence'
-- config JSONB -- non-sensitive metadata
-- credentials_encrypted BYTEA -- encrypted blob for secrets (or store reference to secret manager)
-- scopes TEXT[]
-- created_at TIMESTAMP WITH TIME ZONE
-- updated_at TIMESTAMP WITH TIME ZONE
-
-automation_configs
-- id UUID PRIMARY KEY
-- name TEXT
-- description TEXT
-- trigger JSONB
-- conditions JSONB
-- actions JSONB
-- enabled BOOLEAN DEFAULT TRUE
-- owner_id UUID REFERENCES users(id)
-- created_at TIMESTAMP
-- updated_at TIMESTAMP
-
-jobs
-- id UUID PRIMARY KEY
-- automation_id UUID REFERENCES automation_configs(id)
-- status TEXT -- enum 'queued'|'running'|'success'|'failed'|'cancelled'
-- input JSONB
-- result JSONB
-- started_at TIMESTAMP
-- finished_at TIMESTAMP
-- created_at TIMESTAMP
-
-audit_logs
-- id UUID PRIMARY KEY
-- job_id UUID REFERENCES jobs(id)
-- action TEXT
-- actor TEXT
-- target JSONB
-- details JSONB
-- timestamp TIMESTAMP WITH TIME ZONE DEFAULT now()
-
-indexes: create indexes on frequently queried columns (automation_id, status, created_at)
-
-## 7. Authentication & Authorization
-7.1 Authentication
-- JWT-based session tokens for UI-authenticated users (stateless). For API-to-API calls (workers, webhooks), use signed JWTs or client credentials.
-- JWT signing: use RS256 (asymmetric) or HS256 with strong secret rotated regularly.
-
-7.2 Authorization
-- Role-based (basic) roles: admin, maintainer, user. Enforce via middleware.
-- Ownership checks on automations: only owners or admins can modify.
-
-7.3 Integration Credentials
-- Sensitive credentials stored encrypted in DB (SERVER-side encryption) or better: store in an external secrets manager and keep only a reference in DB.
-- Rotate credentials: expose an endpoint to rotate integration credentials and re-test.
-
-## 8. Local Development & Infra
-8.1 docker-compose (infra/docker-compose.yml)
-A minimal docker-compose file (example):
-
-services:
-  postgres:
-    image: postgres:15
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
-      POSTGRES_DB: automations_dev
-    ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-  server:
-    build: ./server
-    environment:
-      DATABASE_URL: postgres://postgres:postgres@postgres:5432/automations_dev
-      NODE_ENV: development
-    ports:
-      - "4000:4000"
-    depends_on:
-      - postgres
-
-volumes:
-  pgdata:
-
-8.2 Local start scripts (makefile or scripts/)
-- scripts/dev-db.sh — start docker-compose, wait for DB
-- scripts/migrate.sh — run migrations against DATABASE_URL
-- scripts/seed.sh — seed demo data
-
-8.3 Developer workflow
-- Copy .env.example to .env and update local overrides
-- npm install at repo root (workspaces) OR cd into server/client and npm install
-- Start Postgres and server: docker-compose up --build
-- Start client: cd client; npm run dev
-
-## 9. Environment Variables (.env.example)
-
-# Server
-PORT=4000
-DATABASE_URL=postgres://postgres:postgres@localhost:5432/automations_dev
-JWT_SECRET=replace_with_strong_secret
-JWT_ALGO=HS256
-NODE_ENV=development
-ENCRYPTION_KEY=replace_with_32_byte_base64_key
-
-# Optional
-SENTRY_DSN=
-PROMETHEUS_ENABLED=false
-
-Notes:
-- Do not commit local .env files. Provide .env.example with placeholders.
-- ENCRYPTION_KEY used to encrypt integration credentials when not using external secret manager.
-
-## 10. Database Migrations and Seed
-- Use a migration tool (recommended: node-pg-migrate, Knex migrations, or Prisma Migrate).
-- Store migrations under /server/migrations.
-- Example commands:
-  - npm run migrate:dev -> runs migrations against $DATABASE_URL
-  - npm run migrate:up all
-  - npm run migrate:down last
-
-Seed content:
-- Create an admin user, a sample integration (mocked token), a sample automation (manual trigger) and a few job/audit rows for UI development.
-
-## 11. Error Handling, Retries, Rate Limiting, Idempotency
-11.1 Error format
-- Standard error response: { code: "ErrCode", message: "Human readable", details: { ... } }
-- HTTP codes: 400 for validation, 401 unauthorized, 403 forbidden, 404 not found, 429 rate limited, 500 server error
-
-11.2 Retries and backoff
-- External HTTP calls (Jira/Confluence): implement exponential backoff with jitter, max retries = 3 by default.
-- Respect Retry-After headers when returned by remote APIs.
-
-11.3 Idempotency
-- For actions that create external resources (create issue) support idempotency keys on Jobs: accept Idempotency-Key header; store key with job and ensure duplicate requests do not create duplicates.
-
-11.4 Rate limiting
-- Implement per-integration rate limiting to avoid hitting Atlassian quotas. Initially simple token-bucket in-memory; Phase 2 move to Redis for distributed rate limiting.
-
-## 12. Observability & Monitoring
-- Structured JSON logs (use pino or bunyan), include request id/correlation id and user id when available.
-- Expose /metrics in Prometheus format. Track metrics: job_count_total{status=}, job_duration_seconds, external_api_calls_total{provider}, error_count_total.
-- Health endpoints: /health (simple), /ready (readiness checks including DB connectivity).
-- Tracing: add simple request timing and optional OpenTelemetry instrumentation.
-
-## 13. Testing Strategy
-13.1 Unit tests
-- Test services, utilities, and controllers in isolation (mock external API clients).
-- Coverage target: 80% minimum for services and core business logic.
-
-13.2 Integration tests
-- Run against a Postgres test DB in Docker. Use docker-compose-test or testcontainers to spin up Postgres for CI runs.
-- Integration tests exercise API endpoints (supertest) and assert DB state changes.
-
-13.3 End-to-end (E2E)
-- Minimal end-to-end tests that run the client and server (or call API directly) to run one full automation path against mocked external APIs.
-
-13.4 Contract tests
-- If possible, add contract tests for Jira/Confluence interactions (mock servers or recorded fixtures) to detect breaking changes.
-
-## 14. CI/CD
-14.1 CI pipeline (example GitHub Actions)
-- On PR: install (root workspaces), lint, run unit tests (server + client), build client (vite build), run integration tests (with Postgres service), upload coverage, run security scans (npm audit or Snyk).
-- On merge to main: run full pipeline and build Docker images, push to registry with tag, trigger deployment to staging.
-
-14.2 CD
-- Staging: auto-deploy images from main branch builds.
-- Production: manual promotion with release tag and changelog.
-
-## 15. Security Considerations
-- Secrets must never be committed. Use .env.example and secret manager in CI.
-- Encrypt sensitive fields at rest or use external secret stores.
-- Use HTTPS in all environments; require TLS for callbacks and webhooks.
-- Validate and sanitize all inputs before calling external APIs.
-- Rate-limit and throttle to protect downstream services.
-- Regular dependency scanning and CVE monitoring.
-
-## 16. Non-functional Requirements and SLAs
-- Availability: target 99.5% in Phase 1 (measured at service endpoints)
-- Recovery time objective (RTO): 1 hour for service restore
-- Backup retention: daily backups retained for 30 days (configurable)
-
-## 17. Implementation Plan & Milestones
-M1 (Week 0-2): Project setup
-- Create monorepo and skeleton (done)
-- Configure workspaces and root CI
-- Add migration tooling and basic Postgres Docker compose
-
-M2 (Week 2-4): Core API & DB
-- Implement integrations CRUD, automations CRUD, jobs execution skeleton
-- Add migrations and seed scripts
-- Add basic React pages for listing integrations and automations
-
-M3 (Week 4-6): Execution & Audit
-- Implement job runner (sync) and persistent audit logs
-- Add retry/backoff and idempotency support
-- Add tests and instrumentation
-
-M4 (Week 6-8): Hardening & CI/CD
-- Complete CI pipeline, build Docker images, push to registry
-- Add observability (metrics, logs) and docs
-
-## 18. Verification Checklist
-- [ ] OpenAPI spec exists and matches implemented routes
-- [ ] Database migrations apply cleanly to a fresh Postgres 15 instance
-- [ ] Server passes unit + integration tests in CI
-- [ ] Client builds with `vite build` (production) in CI
-- [ ] Sample automation run creates a job and audit log when executed locally
-- [ ] Secrets are not present in any committed files
-
-## 19. Appendix
-19.1 Example Job request
-
-POST /api/v1/jobs
-Headers: Authorization: Bearer <token>
-Body:
+## User Scenarios & Testing *(mandatory)*
+
+### User Story 1 - Manage Jira and Confluence integrations (Priority: P1)
+
+An administrator registers a connection to a Jira or Confluence instance (name, provider, base URL, authentication type, credentials, scopes), reviews existing connections, updates them, rotates credentials, and removes them.
+
+**Why this priority**: Every automation acts through an integration. Nothing else works without at least one.
+
+**Independent Test**: Create a Jira integration through the UI or API, list it, update its name, rotate its token, then delete it. Confirm the credentials are never returned in any response.
+
+**Acceptance Scenarios**:
+
+1. **Given** no integrations exist, **When** an admin creates a Jira integration with a base URL and an API token, **Then** the system returns the new integration without the token and the integration appears in the list.
+2. **Given** an integration exists, **When** an admin lists integrations filtered by provider `confluence`, **Then** only Confluence integrations are returned.
+3. **Given** an integration exists, **When** an admin submits new credentials for it, **Then** the stored credentials are replaced and the old ones are no longer used.
+4. **Given** an integration is referenced by an automation, **When** an admin deletes it, **Then** [NEEDS CLARIFICATION: block the deletion, or delete and disable the dependent automations?].
+5. **Given** a non-admin user, **When** they try to create or delete an integration, **Then** the system rejects the request with a 403 error.
+
+---
+
+### User Story 2 - Define automations (Priority: P1)
+
+A maintainer creates an automation: a named, declarative definition with a trigger (manual, schedule, or webhook), optional conditions, and one or more actions (for example create a Jira issue, add a comment, update a Confluence page), each pointing at an integration. They can enable, disable, edit, and delete it.
+
+**Why this priority**: Automations are the core product. Without them there is nothing to run.
+
+**Independent Test**: Create an automation with a manual trigger and one action targeting an existing integration, fetch it, disable it, then delete it.
+
+**Acceptance Scenarios**:
+
+1. **Given** an existing integration, **When** a maintainer creates an automation with a manual trigger and a `create_issue` action, **Then** the system stores it, records the maintainer as owner, and returns its id.
+2. **Given** an automation owned by user A, **When** user B (not an admin) tries to modify it, **Then** the system rejects the request with a 403 error.
+3. **Given** an automation whose action references an integration that does not exist, **When** it is submitted, **Then** the system rejects it with a 400 validation error that names the invalid field.
+4. **Given** a disabled automation, **When** someone tries to run it, **Then** the system refuses to start a job.
+
+---
+
+### User Story 3 - Run an automation and track the job (Priority: P1)
+
+A user starts an automation manually, optionally passing input. The system creates a job, performs the actions against Jira or Confluence using the stored credentials, records the outcome, and lets the user check the job's status and result at any time.
+
+**Why this priority**: This is the end-to-end value of the platform and the Phase 1 success criterion.
+
+**Independent Test**: Against a mock Jira, run an automation that creates an issue. Confirm a job reaches `success`, the mock received the request, and audit log entries exist for the run.
+
+**Acceptance Scenarios**:
+
+1. **Given** an enabled automation with a valid integration, **When** a user starts a job, **Then** the system creates a job, runs each action in order, sets the job to `success`, and stores the result.
+2. **Given** an action fails permanently, **When** the job runs, **Then** the job ends as `failed` with an error summary and an audit entry for the failure.
+3. **Given** the remote API returns a rate-limit response with a `Retry-After` value, **When** the job runs, **Then** the system waits at least that long before retrying, up to the retry limit.
+4. **Given** a client sends the same start request twice with the same `Idempotency-Key`, **When** the second request arrives, **Then** no second job is created and the original job is returned.
+5. **Given** a running job, **When** a user fetches it, **Then** the response shows its current status, timestamps, and any result so far.
+6. **Given** a list of jobs, **When** a user filters by automation or status, **Then** only matching jobs are returned.
+
+---
+
+### User Story 4 - Review the audit trail (Priority: P2)
+
+A user or auditor browses an immutable history of what the platform did: which job, which action, who triggered it, the target, the time, and the outcome.
+
+**Why this priority**: Required for trust and compliance, but only useful once jobs exist.
+
+**Independent Test**: Run a job, then list audit entries and confirm one entry per action with correct actor, target, and timestamp. Confirm no endpoint can edit or delete an entry.
+
+**Acceptance Scenarios**:
+
+1. **Given** completed jobs, **When** a user requests the latest 50 audit entries, **Then** they are returned newest first.
+2. **Given** a timestamp, **When** a user requests entries since that time, **Then** only newer entries are returned.
+3. **Given** any audit entry, **When** anyone attempts to change or delete it through the API, **Then** the system offers no such operation.
+
+---
+
+### User Story 5 - Sign in and access by role (Priority: P2)
+
+Users authenticate to use the UI and API. Their role (admin, maintainer, user) limits what they can do.
+
+**Why this priority**: Required before the platform handles real credentials, but the core flows can be built against a seeded user first.
+
+**Independent Test**: Sign in as each role and confirm that allowed actions succeed and disallowed ones return 401 or 403.
+
+**Acceptance Scenarios**:
+
+1. **Given** valid credentials, **When** a user signs in, **Then** the system returns a session token.
+2. **Given** a missing, expired, or invalid token, **When** a protected endpoint is called, **Then** the system returns 401.
+3. **Given** a signed-in user lacking the needed role, **When** they call a restricted endpoint, **Then** the system returns 403.
+
+---
+
+### User Story 6 - Operate and monitor the service (Priority: P3)
+
+An operator checks service health, readiness, and metrics, and can trace any request through the logs.
+
+**Why this priority**: Important for running in production, but not needed to demonstrate the main flows.
+
+**Independent Test**: Call `/health`, `/ready`, and `/metrics`; stop the database and confirm `/ready` reports not ready while `/health` still responds.
+
+**Acceptance Scenarios**:
+
+1. **Given** the service and database are up, **When** an operator calls `/ready`, **Then** it reports ready.
+2. **Given** the database is unreachable, **When** an operator calls `/ready`, **Then** it reports not ready.
+3. **Given** metrics are enabled, **When** an operator calls `/metrics`, **Then** job counts, job durations, external call counts, and error counts are exposed in Prometheus format.
+4. **Given** any request, **When** it is logged, **Then** the log entry is structured JSON containing a correlation id.
+
+---
+
+### Edge Cases
+
+- A job is started for an automation that was edited or deleted while the job was running.
+- The remote Jira or Confluence service is unreachable, slow, or returns malformed data.
+- A start request is repeated with the same idempotency key but a different body.
+- Two users update the same automation at the same time.
+- A credential is expired or revoked on the remote side mid-job.
+- A list endpoint is called with a very large `limit` or an invalid `since` value.
+- A stored credential cannot be decrypted (key rotated or data corrupted).
+- The database is down when an audit entry should be written for an action that already happened remotely.
+
+---
+
+## Requirements *(mandatory)*
+
+### Functional Requirements
+
+**Integrations**
+- **FR-001**: The system MUST let authorized users create, read, update, list, and delete integrations for the providers `jira` and `confluence`.
+- **FR-002**: The system MUST support filtering integrations by provider.
+- **FR-003**: The system MUST accept credentials (API token, or OAuth2 client id and secret) on create and update, store them encrypted or as a reference to an external secrets manager, and never return them in any response or log.
+- **FR-004**: The system MUST support rotating an integration's credentials and re-testing the connection.
+- **FR-005**: The system MUST record the scopes requested for each integration and request only the minimum needed.
+
+**Automations**
+- **FR-006**: The system MUST let authorized users create, read, update, list, and delete automations made of a trigger, optional conditions, and one or more actions.
+- **FR-007**: The system MUST support trigger types `manual`, `schedule`, and `webhook`, and action types including `create_issue`, `comment`, and `update_page`.
+- **FR-008**: The system MUST validate that every action references an existing integration and reject invalid definitions with a descriptive 400 error.
+- **FR-009**: The system MUST record the owner of each automation and allow only the owner or an admin to modify or delete it.
+- **FR-010**: The system MUST allow an automation to be enabled or disabled, and MUST NOT run a disabled automation.
+
+**Jobs**
+- **FR-011**: The system MUST let authorized users start a job for an automation with optional input, and return the job id.
+- **FR-012**: The system MUST track each job through the statuses `queued`, `running`, `success`, `failed`, and `cancelled`, with start and finish times and a result.
+- **FR-013**: In Phase 1 the system MUST execute jobs synchronously within the API process; the design MUST NOT prevent moving to a queue and worker later.
+- **FR-014**: The system MUST let users fetch a single job and list jobs filtered by automation and status.
+- **FR-015**: The system MUST honor an `Idempotency-Key` header so repeated start requests do not create duplicate jobs or duplicate external resources.
+- **FR-016**: The system MUST retry transient failures of external calls with exponential backoff and jitter (default maximum 3 retries) and MUST honor `Retry-After`.
+- **FR-017**: The system MUST apply per-integration rate limiting so the platform stays within Atlassian quotas.
+
+**Audit**
+- **FR-018**: The system MUST write an immutable audit entry for every automation action, recording job, action, actor, target, details, and timestamp.
+- **FR-019**: The system MUST let users list audit entries with a `limit` and a `since` filter, newest first, and MUST NOT offer any way to edit or delete entries.
+- **FR-020**: The system MUST store only the minimum metadata needed to reconstruct and re-run an operation; full external payloads are stored only when audit requires them.
+
+**Authentication and authorization**
+- **FR-021**: The system MUST authenticate UI and API users with signed session tokens (JWT) and return 401 for missing, expired, or invalid tokens.
+- **FR-022**: The system MUST enforce the roles `admin`, `maintainer`, and `user` in middleware and return 403 when the role is insufficient.
+- **FR-023**: [NEEDS CLARIFICATION: Are users local accounts created in the platform, or linked to Jira accounts? Phase 1 SSO is out of scope.]
+
+**API conventions**
+- **FR-024**: All endpoints MUST be under `/api/v1`, use JSON, and use RFC 3339 timestamps.
+- **FR-025**: All errors MUST use the format `{ code, message, details? }` with the correct HTTP status (400, 401, 403, 404, 429, 500).
+- **FR-026**: The system MUST publish an OpenAPI v3 document that matches the implemented routes.
+
+**Operations**
+- **FR-027**: The system MUST expose `/health`, `/ready` (including database connectivity), and `/metrics` (Prometheus format when enabled).
+- **FR-028**: The system MUST emit structured JSON logs with timestamp, level, correlation id, and user id when known.
+- **FR-029**: The system MUST apply database schema changes only through version-controlled migrations and provide a seed script for local development.
+- **FR-030**: The system MUST run locally with PostgreSQL 15 in Docker and provide scripts to start the database, migrate, and seed.
+
+**User interface**
+- **FR-031**: The UI MUST provide pages to list and manage integrations and automations, to trigger a job manually and watch its status, and to browse audit logs.
+
+### Key Entities
+
+- **User**: a person using the platform. Has a username, display name, email, and role. Owns automations.
+- **Integration**: a connection to one Jira or Confluence instance. Has a name, provider, non-sensitive configuration (such as base URL and auth type), encrypted credentials, and scopes.
+- **Automation Config**: a declarative definition with a name, description, trigger, conditions, actions, enabled flag, and owner. Each action references an Integration.
+- **Job**: one execution of an Automation Config. Has a status, input, result, idempotency key, and start and finish times.
+- **Audit Log**: an immutable record of one action taken during a Job. Has an action, actor, target, details, and timestamp.
+
+---
+
+## Success Criteria *(mandatory)*
+
+### Measurable Outcomes
+
+- **SC-001**: A user can create an integration and an automation and complete a first successful run against a mock Jira in under 10 minutes using only the UI.
+- **SC-002**: 100% of automation actions executed produce a matching audit entry.
+- **SC-003**: 0 credentials appear in any API response, log line, or committed file.
+- **SC-004**: Repeating a start request with the same idempotency key creates 0 additional jobs and 0 duplicate external resources.
+- **SC-005**: A fresh PostgreSQL 15 database reaches the full schema with a single migration command, and a developer has a working local stack in under 15 minutes.
+- **SC-006**: The service handles hundreds of automation runs per day with no special scaling.
+- **SC-007**: Service availability is at least 99.5%, recovery time after failure is at most 1 hour, and daily backups are kept for 30 days.
+- **SC-008**: The CI pipeline passes on every merged change with lint, unit tests, integration tests, and the client build, and service-layer coverage is at least 80%.
+
+---
+
+## Assumptions
+
+- Phase 1 supports the providers Jira and Confluence only, using API tokens or OAuth2 (the choice between them is to be settled in the first RFC).
+- Jira and Confluence behavior in tests is simulated with mock servers or recorded fixtures; live tenants are not used in CI.
+- Phase 1 volume is moderate (hundreds of operations per day), so Redis, queues, and distributed rate limiting are deferred to Phase 2.
+- Production uses a managed PostgreSQL; local development and CI use PostgreSQL 15 in Docker.
+- The integration request carries credentials inside `config.credentials`, and `triggered_by` is a user id or null. Earlier examples that showed top-level `credentials` or a value like `user:alice` are superseded by this specification.
+- The system serves one organization; multi-tenancy is out of scope for Phase 1.
+- Enterprise SSO and large-scale event-driven automation are deferred.
+
+---
+
+## Appendix A: API Contract (summary)
+
+All paths are prefixed with `/api/v1`. Authentication is a bearer token. Full detail belongs in `/spec/openapi.yaml`.
+
+| Resource | Method and path | Notes |
+|---|---|---|
+| Integrations | `GET /integrations` | Query `?provider=jira\|confluence`; returns id, name, provider, timestamps, metadata |
+| | `GET /integrations/:id` | |
+| | `POST /integrations` | Body: name, provider, config (baseUrl, authType, credentials), scopes; returns 201 |
+| | `PUT /integrations/:id` | Partial update or credential rotation |
+| | `DELETE /integrations/:id` | 204 |
+| Automations | `GET /automations`, `GET /automations/:id` | |
+| | `POST /automations` | Body: name, description, trigger, conditions, actions, enabled; returns 201 |
+| | `PUT /automations/:id`, `DELETE /automations/:id` | 204 on delete |
+| Jobs | `POST /jobs` | Body: automation_id, triggered_by, input; `Idempotency-Key` header; returns 201 |
+| | `GET /jobs/:id` | Status, timestamps, result, audit log ids |
+| | `GET /jobs?automation_id=&status=` | |
+| Audit | `GET /audit?limit=50&since=` | Newest first |
+| Ops | `GET /health`, `GET /ready`, `GET /metrics` | Outside the `/api/v1` prefix |
+
+Example job request:
+
+```json
 {
   "automation_id": "<uuid>",
-  "triggered_by": "user:alice",
+  "triggered_by": "<user-uuid>",
   "input": { "issue_summary": "Automated issue from SpecKit" }
 }
+```
 
-19.2 Example Integration create
+Example integration request:
 
-POST /api/v1/integrations
-Body:
+```json
 {
   "name": "Jira Dev",
   "provider": "jira",
-  "config": { "baseUrl": "https://example.atlassian.net", "authType": "token" },
-  "credentials": { "token": "<REDACTED>" }
+  "config": {
+    "baseUrl": "https://example.atlassian.net",
+    "authType": "token",
+    "credentials": { "token": "<REDACTED>" }
+  },
+  "scopes": ["read:jira-work", "write:jira-work"]
 }
+```
 
-19.3 Recommended libraries & tools
-- Node: express, pino (logging), node-postgres (pg), knex or prisma (migrations/ORM), axios (HTTP client), jose/jsonwebtoken (JWT)
-- Frontend: vite, react, react-router, axios or fetch wrapper, vitest
-- Dev: docker, docker-compose, GitHub Actions (or other CI), testcontainers (optional)
+## Appendix B: Data Model (PostgreSQL 15)
 
----
+Conventions: `snake_case` tables, UUID primary keys, `pgcrypto` for UUID generation, timestamps with time zone.
 
-For the next step: I can generate the OpenAPI spec skeleton (/spec/openapi.yaml), create infra/docker-compose.yml, or scaffold the server migration files. Which would you like me to do next?
+| Table | Columns |
+|---|---|
+| `users` | id, username (unique), display_name, email, created_at |
+| `integrations` | id, name, provider (`jira`\|`confluence`), config (JSONB), credentials_encrypted (BYTEA), scopes (TEXT[]), created_at, updated_at |
+| `automation_configs` | id, name, description, trigger (JSONB), conditions (JSONB), actions (JSONB), enabled (default true), owner_id → users, created_at, updated_at |
+| `jobs` | id, automation_id → automation_configs, status (`queued`\|`running`\|`success`\|`failed`\|`cancelled`), idempotency_key (unique), input (JSONB), result (JSONB), started_at, finished_at, created_at |
+| `audit_logs` | id, job_id → jobs, action, actor, target (JSONB), details (JSONB), timestamp (default now) |
+
+Indexes: `jobs(automation_id)`, `jobs(status)`, `jobs(created_at)`, `audit_logs(job_id)`, `audit_logs(timestamp)`.
+
+Seed data: an admin user, a sample integration with a mocked token, a sample manual automation, and a few job and audit rows for UI development.
+
+## Appendix C: Configuration
+
+| Variable | Purpose |
+|---|---|
+| `PORT` | Server port (default 4000) |
+| `DATABASE_URL` | PostgreSQL connection string |
+| `JWT_SECRET`, `JWT_ALGO` | Token signing secret and algorithm (`HS256`, or `RS256` with keys) |
+| `NODE_ENV` | Runtime environment |
+| `ENCRYPTION_KEY` | 32-byte base64 key for encrypting integration credentials when no external secrets manager is used |
+| `SENTRY_DSN`, `PROMETHEUS_ENABLED` | Optional error reporting and metrics toggle |
+
+Local development copies `.env.example` to `.env`. Real values are never committed.
+
+## Appendix D: Delivery Milestones
+
+| Milestone | Weeks | Scope |
+|---|---|---|
+| M1 Project setup | 0-2 | Monorepo and skeleton, workspaces, root CI, migration tooling, Postgres in Docker |
+| M2 Core API and database | 2-4 | Integrations and automations CRUD, jobs skeleton, migrations and seed, basic React pages for integrations and automations |
+| M3 Execution and audit | 4-6 | Synchronous job runner, persistent audit logs, retry and backoff, idempotency, tests and instrumentation |
+| M4 Hardening and CI/CD | 6-8 | Full CI pipeline, Docker images pushed to a registry, metrics and logs, documentation |
+
+## Appendix E: Verification Checklist
+
+- [ ] OpenAPI spec exists and matches the implemented routes
+- [ ] Migrations apply cleanly to a fresh PostgreSQL 15 instance
+- [ ] Server unit and integration tests pass in CI
+- [ ] Client builds with `vite build` in CI
+- [ ] A sample automation run creates a job and audit log entries locally
+- [ ] No secrets are present in any committed file
+
+## Appendix F: Recommended Tooling
+
+- **Backend:** express, pino (logging), pg, knex or node-pg-migrate or Prisma (migrations and data access), axios, jose or jsonwebtoken, supertest
+- **Frontend:** react, react-router, vite, vitest, an axios or fetch wrapper
+- **Delivery:** Docker, docker-compose, GitHub Actions, testcontainers (optional)
