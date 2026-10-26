@@ -1,0 +1,34 @@
+services:
+  postgres:
+    image: postgres:15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: automations_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d automations_dev"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Opt-in until server/Dockerfile is implemented: docker compose --profile app up --build
+  server:
+    profiles: ["app"]
+    build: ../server
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/automations_dev
+      NODE_ENV: development
+      PORT: "4000"
+    ports:
+      - "4000:4000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
