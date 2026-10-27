@@ -5,6 +5,11 @@
       "command": "python3",
       "args": ["${workspaceFolder}/tools/mcp-echo.py"]
     },
+    "gettime-mac": {
+      "type": "stdio",
+      "command": "python3",
+      "args": ["${workspaceFolder}/tools/mcp-get-time.py"]
+    },
     "chrome-devtools": {
       "type": "stdio",
       "command": "npx",
